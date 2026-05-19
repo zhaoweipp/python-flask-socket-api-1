@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Serial Socket Bridge</title>
+    <script src="https://cdn.jsdelivr.net/npm/vue@2/dist/vue.js"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <h2>串口透明转发 Demo</h2>
+      <p>client_id: {{ clientId || '连接中...' }}</p>
+      <input v-model="command" placeholder="输入发送到串口的数据" />
+      <button @click="sendCommand">发送</button>
+      <pre>{{ logs.join('\n') }}</pre>
+    </div>
+
+    <script>
+      new Vue({
+        el: '#app',
+        data: {
+          socket: null,
+          clientId: localStorage.getItem('client_id') || '',
+          command: '',
+          logs: [],
+          heartbeatTimer: null,
+          pendingAck: {}
+        },
+        mounted() {
+          this.connect()
+        },
+        methods: {
+          connect() {
+            this.socket = io('/', {
+              transports: ['websocket'],
+              reconnection: true,
+              reconnectionAttempts: Infinity,
+              reconnectionDelay: 1000,
+              query: { client_id: this.clientId }
+            })
+
+            this.socket.on('connected', (msg) => {
+              this.clientId = msg.client_id
+              localStorage.setItem('client_id', this.clientId)
+              this.logs.unshift('[connected] client_id=' + this.clientId)
+            })
+
+            this.socket.on('serial_data', (msg) => {
+              this.logs.unshift('[serial_data] ' + msg.data)
+            })
+
+            this.socket.on('ack', (msg) => {
+              if (msg.msg_id && this.pendingAck[msg.msg_id]) {
+                clearTimeout(this.pendingAck[msg.msg_id])
+                delete this.pendingAck[msg.msg_id]
+              }
+              this.logs.unshift('[ack] ' + JSON.stringify(msg))
+            })
+
+            this.socket.on('pong', (msg) => {
+              this.logs.unshift('[pong] ' + JSON.stringify(msg))
+            })
+
+            this.startHeartbeat()
+          },
+          startHeartbeat() {
+            if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
+            this.heartbeatTimer = setInterval(() => {
+              if (this.socket && this.socket.connected) {
+                this.socket.emit('ping', { ts: Date.now() })
+              }
+            }, 10000)
+          },
+          sendCommand() {
+            if (!this.socket || !this.socket.connected) return
+            const msgId = Date.now() + '-' + Math.random().toString(16).slice(2)
+            this.socket.emit('command', { msg_id: msgId, data: this.command })
+            this.pendingAck[msgId] = setTimeout(() => {
+              this.logs.unshift('[ack-timeout] msg_id=' + msgId)
+              delete this.pendingAck[msgId]
+            }, 5000)
+          }
+        }
+      })
+    </script>
+  </body>
+</html>
